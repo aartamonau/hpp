@@ -5,7 +5,7 @@
 
 #include <wb.h>
 
-#define BLOCK_SIZE 2048 //@@ You can change this
+#define BLOCK_SIZE 1024 //@@ You can change this
 
 #define wbCheck(stmt) do {                                 \
         cudaError_t err = stmt;                            \
