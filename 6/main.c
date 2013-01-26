@@ -21,9 +21,9 @@
 
 //@@ INSERT CODE HERE
 
-void convolution(float *input, float *output,
-                 int width, int height,
-                 const float __restrict__ mask[MASK_WIDTH][MASK_WIDTH][CHANNELS])
+__global__ void convolution(float *input, float *output,
+                            int width, int height,
+                            const float * __restrict__ mask)
 {
     int bw = blockDim.x;
     int bh = blockDim.y;
@@ -43,7 +43,7 @@ void convolution(float *input, float *output,
 
 #define x(dx) ((bx + (dx)) * bw + tx)
 #define y(dy) ((by + (dy)) * bh + ty)
-#define source_ix(x, y) (((y) * width + (y)) * CHANNELS)
+#define source_ix(x, y) (((y) * width + (x)) * CHANNELS)
 
 #define read(dx, dy)                                   \
     do {                                               \
@@ -60,9 +60,9 @@ void convolution(float *input, float *output,
             tile[tile_x][tile_y][1] = input[six + 1];  \
             tile[tile_x][tile_y][2] = input[six + 2];  \
         } else {                                       \
-            tile[tile_tx][tile_ty][0] = 0;             \
-            tile[tile_tx][tile_ty][1] = 0;             \
-            tile[tile_tx][tile_ty][2] = 0;             \
+            tile[tile_x][tile_y][0] = 0;               \
+            tile[tile_x][tile_y][1] = 0;               \
+            tile[tile_x][tile_y][2] = 0;               \
         }                                              \
                                                        \
     } while (0)
@@ -97,31 +97,37 @@ void convolution(float *input, float *output,
     __syncthreads();
 
     float p[CHANNELS] = { 0 };
+    float m;
+
     for (int i = -MASK_RADIUS; i <= MASK_RADIUS; ++i) {
         for (int j = -MASK_RADIUS; j <= MASK_RADIUS; ++j) {
             for (int c = 0; c < CHANNELS; ++c) {
-                p[c] += tile[tx + i][ty + j][c]
+                int mi = i + MASK_RADIUS;
+                int mj = j + MASK_RADIUS;
+
+                m = mask[(mi + mj * MASK_WIDTH) * CHANNELS + c];
+                p[c] += tile[tx + i][ty + j][c] * m;
             }
         }
     }
 
-    sx = x(dx);
-    sy = y(dy);
+    sx = x(0);
+    sy = y(0);
     tile_x = MASK_RADIUS + tx;
     tile_y = MASK_RADIUS + ty;
 
     if (sx < width && sy < height) {
         six = source_ix(sx, sy);
 
-        input[six] = tile[tile_x][tile_y][0];
-        input[six + 1] = tile[tile_x][tile_y][1];
-        input[six + 2] = tile[tile_x][tile_y][2];
+        output[six] = tile[tile_x][tile_y][0];
+        output[six + 1] = tile[tile_x][tile_y][1];
+        output[six + 2] = tile[tile_x][tile_y][2];
     }
 }
 
 
 int main(int argc, char* argv[]) {
-    wbArg_t arg;
+    wbArg_t args;
     int maskRows;
     int maskColumns;
     int imageChannels;
@@ -138,10 +144,10 @@ int main(int argc, char* argv[]) {
     float * deviceOutputImageData;
     float * deviceMaskData;
 
-    arg = wbArg_read(argc, argv); /* parse the input arguments */
+    args = wbArg_read(argc, argv); /* parse the input arguments */
 
-    inputImageFile = wbArg_getInputFile(arg, 0);
-    inputMaskFile = wbArg_getInputFile(arg, 1);
+    inputImageFile = wbArg_getInputFile(args, 0);
+    inputMaskFile = wbArg_getInputFile(args, 1);
 
     inputImage = wbImport(inputImageFile);
     hostMaskData = (float *) wbImport(inputMaskFile, &maskRows, &maskColumns);
@@ -152,6 +158,8 @@ int main(int argc, char* argv[]) {
     imageWidth = wbImage_getWidth(inputImage);
     imageHeight = wbImage_getHeight(inputImage);
     imageChannels = wbImage_getChannels(inputImage);
+
+    wbLog(TRACE, "Image dimensions: ", imageWidth, "x", imageHeight);
 
     outputImage = wbImage_new(imageWidth, imageHeight, imageChannels);
 
@@ -184,9 +192,9 @@ int main(int argc, char* argv[]) {
 
     wbTime_start(Compute, "Doing the computation on the GPU");
     //@@ INSERT CODE HERE
-    convolution(deviceInputImageData, deviceOutputImageData,
-                imageWidth, imageHeight,
-                deviceMaskData);
+    convolution<<< dimGrid, dimBlock >>>(deviceInputImageData,
+                                         deviceOutputImageData,
+                                         imageWidth, imageHeight, deviceMaskData);
     wbTime_stop(Compute, "Doing the computation on the GPU");
 
 
