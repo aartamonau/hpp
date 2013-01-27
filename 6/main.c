@@ -45,26 +45,28 @@ __global__ void convolution(float *input, float *output,
 #define y(dy) ((by + (dy)) * bh + ty)
 #define source_ix(x, y) (((y) * width + (x)) * CHANNELS)
 
-#define read(dx, dy)                                   \
-    do {                                               \
-        sx = x(dx);                                    \
-        sy = y(dy);                                    \
-                                                       \
-        tile_x = MASK_RADIUS + tx + (dx) * TILE_WIDTH; \
-        tile_y = MASK_RADIUS + ty + (dy) * TILE_WIDTH; \
-                                                       \
-        if (sx < width && sy < height) {               \
-            six = source_ix(sx, sy);                   \
-                                                       \
-            tile[tile_x][tile_y][0] = input[six];      \
-            tile[tile_x][tile_y][1] = input[six + 1];  \
-            tile[tile_x][tile_y][2] = input[six + 2];  \
-        } else {                                       \
-            tile[tile_x][tile_y][0] = 0;               \
-            tile[tile_x][tile_y][1] = 0;               \
-            tile[tile_x][tile_y][2] = 0;               \
-        }                                              \
-                                                       \
+#define read(dx, dy)                                              \
+    do {                                                          \
+        sx = x(dx);                                               \
+        sy = y(dy);                                               \
+                                                                  \
+        tile_x = MASK_RADIUS + tx + (dx) * TILE_WIDTH;            \
+        tile_y = MASK_RADIUS + ty + (dy) * TILE_WIDTH;            \
+                                                                  \
+        if (tile_x >= 0 && tile_y >= 0 &&                         \
+            tile_x < EXT_TILE_WIDTH && tile_y < EXT_TILE_WIDTH) { \
+            if (sx < width && sy < height) {                      \
+                six = source_ix(sx, sy);                          \
+                                                                  \
+                tile[tile_x][tile_y][0] = input[six];             \
+                tile[tile_x][tile_y][1] = input[six + 1];         \
+                tile[tile_x][tile_y][2] = input[six + 2];         \
+            } else {                                              \
+                tile[tile_x][tile_y][0] = 0;                      \
+                tile[tile_x][tile_y][1] = 0;                      \
+                tile[tile_x][tile_y][2] = 0;                      \
+            }                                                     \
+        }                                                         \
     } while (0)
 
     /* top halo */
@@ -99,13 +101,10 @@ __global__ void convolution(float *input, float *output,
     float p[CHANNELS] = { 0 };
     float m;
 
-    for (int i = -MASK_RADIUS; i <= MASK_RADIUS; ++i) {
-        for (int j = -MASK_RADIUS; j <= MASK_RADIUS; ++j) {
+    for (int i = 0; i < MASK_WIDTH; ++i) {
+        for (int j = 0; j < MASK_WIDTH; ++j) {
             for (int c = 0; c < CHANNELS; ++c) {
-                int mi = i + MASK_RADIUS;
-                int mj = j + MASK_RADIUS;
-
-                m = mask[(mi + mj * MASK_WIDTH) * CHANNELS + c];
+                m = mask[i + j * MASK_WIDTH];
                 p[c] += tile[tx + i][ty + j][c] * m;
             }
         }
@@ -119,9 +118,9 @@ __global__ void convolution(float *input, float *output,
     if (sx < width && sy < height) {
         six = source_ix(sx, sy);
 
-        output[six] = tile[tile_x][tile_y][0];
-        output[six + 1] = tile[tile_x][tile_y][1];
-        output[six + 2] = tile[tile_x][tile_y][2];
+        output[six] = p[0];
+        output[six + 1] = p[1];
+        output[six + 2] = p[2];
     }
 }
 
@@ -169,21 +168,21 @@ int main(int argc, char* argv[]) {
     wbTime_start(GPU, "Doing GPU Computation (memory + compute)");
 
     wbTime_start(GPU, "Doing GPU memory allocation");
-    cudaMalloc((void **) &deviceInputImageData, imageWidth * imageHeight * imageChannels * sizeof(float));
-    cudaMalloc((void **) &deviceOutputImageData, imageWidth * imageHeight * imageChannels * sizeof(float));
-    cudaMalloc((void **) &deviceMaskData, maskRows * maskColumns * sizeof(float));
+    wbCheck(cudaMalloc((void **) &deviceInputImageData, imageWidth * imageHeight * imageChannels * sizeof(float)));
+    wbCheck(cudaMalloc((void **) &deviceOutputImageData, imageWidth * imageHeight * imageChannels * sizeof(float)));
+    wbCheck(cudaMalloc((void **) &deviceMaskData, maskRows * maskColumns * sizeof(float)));
     wbTime_stop(GPU, "Doing GPU memory allocation");
 
 
     wbTime_start(Copy, "Copying data to the GPU");
-    cudaMemcpy(deviceInputImageData,
-               hostInputImageData,
-               imageWidth * imageHeight * imageChannels * sizeof(float),
-               cudaMemcpyHostToDevice);
-    cudaMemcpy(deviceMaskData,
-               hostMaskData,
-               maskRows * maskColumns * sizeof(float),
-               cudaMemcpyHostToDevice);
+    wbCheck(cudaMemcpy(deviceInputImageData,
+                       hostInputImageData,
+                       imageWidth * imageHeight * imageChannels * sizeof(float),
+                       cudaMemcpyHostToDevice));
+    wbCheck(cudaMemcpy(deviceMaskData,
+                       hostMaskData,
+                       maskRows * maskColumns * sizeof(float),
+                       cudaMemcpyHostToDevice));
     wbTime_stop(Copy, "Copying data to the GPU");
 
     dim3 dimGrid(TILE_WIDTH, TILE_WIDTH);
@@ -195,17 +194,49 @@ int main(int argc, char* argv[]) {
     convolution<<< dimGrid, dimBlock >>>(deviceInputImageData,
                                          deviceOutputImageData,
                                          imageWidth, imageHeight, deviceMaskData);
+    wbCheck(cudaDeviceSynchronize());
     wbTime_stop(Compute, "Doing the computation on the GPU");
 
 
     wbTime_start(Copy, "Copying data from the GPU");
-    cudaMemcpy(hostOutputImageData,
-               deviceOutputImageData,
-               imageWidth * imageHeight * imageChannels * sizeof(float),
-               cudaMemcpyDeviceToHost);
+    wbCheck(cudaMemcpy(hostOutputImageData,
+                       deviceOutputImageData,
+                       imageWidth * imageHeight * imageChannels * sizeof(float),
+                       cudaMemcpyDeviceToHost));
     wbTime_stop(Copy, "Copying data from the GPU");
 
     wbTime_stop(GPU, "Doing GPU Computation (memory + compute)");
+
+#define pixel(data, ix) data[(ix)], data[(ix)+1], data[(ix)+2]
+#define row(data, ix) pixel(data, ix), pixel(data, ix + 3), pixel(data, ix + 6), pixel(data, ix + 9), pixel(data, ix + 12)
+
+    char buf[1024];
+
+    wbLog(TRACE, "Mask: ");
+    for (int j = 0; j < MASK_WIDTH; ++j) {
+        int ix = j * MASK_WIDTH * CHANNELS;
+
+        snprintf(buf, 1024, "%f %f %f %f %f",
+                 hostMaskData[ix], hostMaskData[ix+1], hostMaskData[ix+2], hostMaskData[ix+3], hostMaskData[ix+4]);
+
+        wbLog(TRACE, buf);
+    }
+
+    wbLog(TRACE, "Input: ");
+    for (int j = 0; j < MASK_WIDTH; ++j) {
+        int ix = j * imageWidth * CHANNELS;
+        snprintf(buf, 1024, "(%f, %f, %f) (%f, %f, %f) (%f, %f, %f) (%f, %f, %f) (%f, %f, %f)",
+                 row(hostInputImageData, ix));
+        wbLog(TRACE, buf);
+    }
+
+    wbLog(TRACE, "Output: ");
+    for (int j = 0; j < MASK_WIDTH; ++j) {
+        int ix = j * imageWidth * CHANNELS;
+        snprintf(buf, 1024, "(%f, %f, %f) (%f, %f, %f) (%f, %f, %f) (%f, %f, %f) (%f, %f, %f)",
+                 row(hostOutputImageData, ix));
+        wbLog(TRACE, buf);
+    }
 
     wbSolution(args, outputImage);
 
