@@ -55,7 +55,8 @@ __global__ void convolution(float *input, float *output,
                                                                   \
         if (tile_x >= 0 && tile_y >= 0 &&                         \
             tile_x < EXT_TILE_WIDTH && tile_y < EXT_TILE_WIDTH) { \
-            if (sx < width && sy < height) {                      \
+            if (sx >= 0 && sy >= 0 &&                             \
+                sx < width && sy < height) {                      \
                 six = source_ix(sx, sy);                          \
                                                                   \
                 tile[tile_x][tile_y][0] = input[six];             \
@@ -185,9 +186,9 @@ int main(int argc, char* argv[]) {
                        cudaMemcpyHostToDevice));
     wbTime_stop(Copy, "Copying data to the GPU");
 
-    dim3 dimGrid(TILE_WIDTH, TILE_WIDTH);
-    dim3 dimBlock(1 + (imageWidth - 1) / TILE_WIDTH,
-                  1 + (imageHeight - 1) / TILE_WIDTH);
+    dim3 dimGrid(1 + (imageWidth - 1) / TILE_WIDTH,
+                 1 + (imageHeight - 1) / TILE_WIDTH);
+    dim3 dimBlock(TILE_WIDTH, TILE_WIDTH);
 
     wbTime_start(Compute, "Doing the computation on the GPU");
     //@@ INSERT CODE HERE
@@ -207,6 +208,8 @@ int main(int argc, char* argv[]) {
 
     wbTime_stop(GPU, "Doing GPU Computation (memory + compute)");
 
+#ifdef DEBUG
+
 #define pixel(data, ix) data[(ix)], data[(ix)+1], data[(ix)+2]
 #define row(data, ix) pixel(data, ix), pixel(data, ix + 3), pixel(data, ix + 6), pixel(data, ix + 9), pixel(data, ix + 12)
 
@@ -214,7 +217,7 @@ int main(int argc, char* argv[]) {
 
     wbLog(TRACE, "Mask: ");
     for (int j = 0; j < MASK_WIDTH; ++j) {
-        int ix = j * MASK_WIDTH * CHANNELS;
+        int ix = j * MASK_WIDTH;
 
         snprintf(buf, 1024, "%f %f %f %f %f",
                  hostMaskData[ix], hostMaskData[ix+1], hostMaskData[ix+2], hostMaskData[ix+3], hostMaskData[ix+4]);
@@ -237,6 +240,8 @@ int main(int argc, char* argv[]) {
                  row(hostOutputImageData, ix));
         wbLog(TRACE, buf);
     }
+
+#endif
 
     wbSolution(args, outputImage);
 
